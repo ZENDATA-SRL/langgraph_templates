@@ -27,8 +27,7 @@ class State(TypedDict):
 graph_builder = StateGraph(State)
 
 # Add the tools to the graph
-tool = TavilySearchResults(max_results=2) # This class __call__ execute a search on tavily and return the results
-tools = [tool]
+tools = [TavilySearchResults(max_results=2)]
 
 llm = ChatBedrock(
     model_id="anthropic.claude-3-haiku-20240307-v1:0",

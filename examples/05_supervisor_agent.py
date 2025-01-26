@@ -44,8 +44,6 @@ class State(TypedDict):
                 "assistant",
                 "update_flight",
                 "book_car_rental",
-                "book_hotel",
-                "book_excursion",
             ]
         ],
         update_dialog_stack,
@@ -68,6 +66,7 @@ class Assistant:
 
     def __call__(self, state: State, config: RunnableConfig):
         while True:
+            print("Running assistant", state["dialog_state"])
             result = self.runnable.invoke(state)
 
             if not result.tool_calls and (
@@ -585,4 +584,13 @@ graph = builder.compile(
     checkpointer=checkpointer,
 )
 
-print(graph.get_graph().draw_mermaid())
+while True:
+    question = input("Ask a question: ")
+    config = {
+        "configurable": {
+            "passenger_id": "3442 587242",
+            "thread_id": "8",
+        }
+    }
+    response = graph.invoke({"messages": [("user", question)]}, config=config)
+    print(response["messages"][-1].content)

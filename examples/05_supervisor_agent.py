@@ -6,6 +6,7 @@ Each workflow can focus on its domain, allowing for isolated improvements withou
 In complex graph we may want to trak the current state of which sub-graph is in control at any given moment.
 We can manage this by adding more fields in the Graph state, such as the current sub-graph name or the current node name."""
 
+import os
 from datetime import date, datetime
 from typing import Annotated, Callable, Literal, Optional, Union
 
@@ -15,10 +16,12 @@ from langchain_core.messages import ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
+from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import AnyMessage, add_messages
-from langgraph.prebuilt import tools_condition, ToolNode
+from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
+from pymongo import MongoClient
 from typing_extensions import TypedDict
 
 
@@ -444,15 +447,14 @@ def route_update_flight(
     did_cancel = any(tc["name"] == CompleteOrEscalate.__name__ for tc in tool_calls)
     if did_cancel:
         return "leave_skill"
-    return "update_flight_safe_tools"
+    return "flight_tools"
 
 
-builder.add_edge("update_flight_sensitive_tools", "update_flight")
-builder.add_edge("update_flight_safe_tools", "update_flight")
+builder.add_edge("flight_tools", "update_flight")
 builder.add_conditional_edges(
     "update_flight",
     route_update_flight,
-    ["update_flight_sensitive_tools", "update_flight_safe_tools", "leave_skill", END],
+    ["flight_tools", "leave_skill", END],
 )
 
 
@@ -480,3 +482,107 @@ def pop_dialog_state(state: State) -> dict:
 
 builder.add_node("leave_skill", pop_dialog_state)
 builder.add_edge("leave_skill", "primary_assistant")
+
+# Car rental assistant
+builder.add_node(
+    "enter_book_car_rental",
+    create_entry_node("Car Rental Assistant", "book_car_rental"),
+)
+builder.add_node("book_car_rental", Assistant(car_rental_runnable))
+builder.add_edge("enter_book_car_rental", "book_car_rental")
+builder.add_node(
+    "car_rental_tools",
+    create_tool_node_with_fallback(car_rental_tools),
+)
+
+
+def route_book_car_rental(
+    state: State,
+):
+    route = tools_condition(state)
+    if route == END:
+        return END
+    tool_calls = state["messages"][-1].tool_calls
+    did_cancel = any(tc["name"] == CompleteOrEscalate.__name__ for tc in tool_calls)
+    if did_cancel:
+        return "leave_skill"
+    return "car_rental_tools"
+
+
+builder.add_edge("car_rental_tools", "book_car_rental")
+builder.add_conditional_edges(
+    "book_car_rental",
+    route_book_car_rental,
+    [
+        "car_rental_tools",
+        "leave_skill",
+        END,
+    ],
+)
+
+
+# Primary assistant
+builder.add_node("primary_assistant", Assistant(assistant_runnable))
+builder.add_node(
+    "primary_assistant_tools", create_tool_node_with_fallback(primary_assistant_tools)
+)
+
+
+def route_primary_assistant(
+    state: State,
+):
+    route = tools_condition(state)
+    if route == END:
+        return END
+    tool_calls = state["messages"][-1].tool_calls
+    if tool_calls:
+        if tool_calls[0]["name"] == ToFlightBookingAssistant.__name__:
+            return "enter_update_flight"
+        elif tool_calls[0]["name"] == ToBookCarRental.__name__:
+            return "enter_book_car_rental"
+        return "primary_assistant_tools"
+    raise ValueError("Invalid route")
+
+
+# The assistant can route to one of the delegated assistants,
+# directly use a tool, or directly respond to the user
+builder.add_conditional_edges(
+    "primary_assistant",
+    route_primary_assistant,
+    [
+        "enter_update_flight",
+        "enter_book_car_rental",
+        "primary_assistant_tools",
+        END,
+    ],
+)
+builder.add_edge("primary_assistant_tools", "primary_assistant")
+
+
+# Each delegated workflow can directly respond to the user
+# When the user responds, we want to return to the currently active workflow
+def route_to_workflow(
+    state: State,
+) -> Literal[
+    "primary_assistant",
+    "update_flight",
+    "book_car_rental",
+]:
+    """If we are in a delegated state, route directly to the appropriate assistant."""
+    dialog_state = state.get("dialog_state")
+    if not dialog_state:
+        return "primary_assistant"
+    return dialog_state[-1]
+
+
+builder.add_conditional_edges("fetch_user_info", route_to_workflow)
+
+# Compile graph
+MONGODB_URI = os.environ["MONGODB_URI"]
+mongodb_client = MongoClient(MONGODB_URI)
+checkpointer = MongoDBSaver(mongodb_client)
+graph = builder.compile(
+    checkpointer=checkpointer,
+)
+
+print(graph.get_graph().draw_mermaid())

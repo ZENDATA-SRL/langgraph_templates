@@ -1,5 +1,8 @@
 # Langraph General Concepts
-# LangGraph is a stateful orchestration framework designed to enhance control over agent workflows, particularly in applications involving large language models (LLMs)
+# LangGraph is a stateful orchestration framework designed to enhance control over agents and workflows, particularly in applications involving large language models (LLMs)
+
+# Workflows are systems where LLMs and tools are orchestrated through predefined code paths.
+# Agents, on the other hand, are systems where LLMs dynamically direct their own processes and tool usage, maintaining control over how they accomplish tasks.
 
 """A Langraph Graph builder needs always a StateGraph to build a graph. A StateGraph object defines the structure of our chatbot as a "state machine".
 We'll add nodes to represent the llm and functions our chatbot can call and edges to specify how the bot should transition between these functions.

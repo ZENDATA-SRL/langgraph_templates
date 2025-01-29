@@ -1,4 +1,5 @@
-# A Zero Shot Agent is an Agentic architecture where an LLM has some tools (python functions) that it can call and exploits their result to answer a user question.
+# Agents can handle sophisticated tasks, but their implementation is often straightforward. 
+# They are typically just LLMs using tools based on environmental feedback in a loop. It is therefore crucial to design toolsets and their documentation clearly and thoughtfully.
 # The agent uses a reflection mechanism to call the tools and get the result.
 
 # Start building the graph state the llm engine and the tools

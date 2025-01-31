@@ -6,16 +6,15 @@
 # - No Retrieval
 # - Single-shot RAG
 # - Iterative RAG
-from typing import Annotated, List, Literal
+from typing import List, Literal
 
 from langchain_aws import ChatBedrock
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
-from langchain_core.output_parsers import StrOutputParser
-from langchain_community.tools import DuckDuckGoSearchRun
 
 
 ## Router
@@ -171,6 +170,7 @@ class GraphState(TypedDict):
         generation: LLM generation
         documents: list of documents
     """
+
     question: str
     generation: str
     documents: List[str]
@@ -183,6 +183,7 @@ def web_search(state: GraphState):
     question = state["question"]
     documents = web_search_tool.invoke(question)
     return {"documents": documents}
+
 
 def retrieve(state: GraphState):
     """
@@ -232,7 +233,12 @@ def generate(state: GraphState):
 
     # RAG generation
     generation = rag_chain.invoke({"context": documents, "question": question})
-    return {"documents": documents, "question": question, "generation": generation.content}
+    return {
+        "documents": documents,
+        "question": question,
+        "generation": generation.content,
+    }
+
 
 def grade_retrieval(state: GraphState):
     # Grade the retrieved documents
@@ -241,20 +247,26 @@ def grade_retrieval(state: GraphState):
     documents = state["documents"]
     filtered_documents = []
     for doc in documents:
-        grade: GradeDocuments = retrieval_grader.invoke({"question": question, "document": doc})
+        grade: GradeDocuments = retrieval_grader.invoke(
+            {"question": question, "document": doc}
+        )
         print(f"Document: {doc} Grade: {grade.binary_score}")
         if grade.binary_score == "yes":
             filtered_documents.append(doc)
     return {"grade": len(filtered_documents) > 0, "documents": filtered_documents}
+
 
 def grade_answer(state: GraphState):
     # Grade the generated answer
     print("---GRADE ANSWER---")
     question = state["question"]
     generation = state["generation"]
-    grade: GradeAnswer = answer_grader.invoke({"question": question, "generation": generation})
+    grade: GradeAnswer = answer_grader.invoke(
+        {"question": question, "generation": generation}
+    )
     print(f"Generation: {generation} Grade: {grade.binary_score}")
     return {"grade": grade.binary_score == "yes"}
+
 
 def transform_query(state):
     """
@@ -273,6 +285,7 @@ def transform_query(state):
     better_question = question_rewriter.invoke({"question": question})
     return {"documents": documents, "question": better_question}
 
+
 # Edge functions
 def route_query(state: GraphState):
     # Route the question to the most relevant datasource
@@ -285,7 +298,8 @@ def route_query(state: GraphState):
     elif source.datasource == "vectorstore":
         print("---ROUTE QUESTION TO RAG---")
         return "vectorstore"
-    
+
+
 def decide_to_generate(state: GraphState):
     # Decide whether to generate an answer
     print("---DECIDE TO GENERATE---")
@@ -302,7 +316,8 @@ def decide_to_generate(state: GraphState):
         # We have relevant documents, so generate answer
         print("---DECISION: GENERATE---")
         return "generate"
-    
+
+
 def grade_generation_v_documents_and_question(state: GraphState):
     """
     Determines whether the generation is grounded in the document and answers question.
@@ -339,8 +354,59 @@ def grade_generation_v_documents_and_question(state: GraphState):
     else:
         print("---DECISION: GENERATION IS NOT GROUNDED IN DOCUMENTS, RE-TRY---")
         return "not supported"
-    
+
+
 graph_builder = StateGraph(GraphState)
 
 # Add nodes
-graph_builder.add_node("route_query", route_query)
+workflow = StateGraph(GraphState)
+
+# Define the nodes
+workflow.add_node("web_search", web_search)  # web search
+workflow.add_node("retrieve", retrieve)  # retrieve
+workflow.add_node("grade_documents", grade_retrieval)  # grade documents
+workflow.add_node("generate", generate)  # generatae
+workflow.add_node("transform_query", transform_query)  # transform_query
+
+# Build graph
+workflow.add_conditional_edges(
+    START,
+    route_query,
+    {
+        "web_search": "web_search",
+        "vectorstore": "retrieve",
+    },
+)
+workflow.add_edge("web_search", "generate")
+workflow.add_edge("retrieve", "grade_documents")
+workflow.add_conditional_edges(
+    "grade_documents",
+    decide_to_generate,
+    {
+        "transform_query": "transform_query",
+        "generate": "generate",
+    },
+)
+workflow.add_edge("transform_query", "retrieve")
+workflow.add_conditional_edges(
+    "generate",
+    grade_generation_v_documents_and_question,
+    {
+        "not supported": "generate",
+        "useful": END,
+        "not useful": "transform_query",
+    },
+)
+
+# Compile
+graph = workflow.compile()
+while True:
+    user_question = input("Enter a question: ")
+    graph_state = {"question": user_question}
+    config = {
+        "configurable": {
+            "thread_id": "1234",
+        }
+    }
+    response = graph.invoke(graph_state, config)
+    print(response["generation"])
